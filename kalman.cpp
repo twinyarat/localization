@@ -99,7 +99,7 @@ VectorXd kalman::expectedReading(const VectorXd& s, const Reading& r, MAP& corre
 	return vec;
 }
 
-//computes the expected control (linear and angular velocities) that takes curState to nextState
+//computes the expected control (linear and angular velocities) that would take curState to nextState
 VectorXd kalman::expectedControl(const State& curState, const State& nextState, double dt){
 	VectorXd u_bar(C_DIMENSION);
 	double w_bar = 0;
@@ -164,9 +164,8 @@ MatrixXd kalman::learnControlNoiseParams(std::vector<Control> controls, std::vec
 }
 
 //learn covariance of measurement-related noise 
-MatrixXd kalman::learnMeasureCovariance(std::vector<Measurement>& measurements, std::vector<State>& groundTruths, MAP& correspondence){
-	MatrixXd Q(M_DIMENSION, M_DIMENSION);
-	Q << 0,0,0,0;
+MatrixXd kalman::learnMeasureNoiseCovariance(std::vector<Measurement>& measurements, std::vector<State>& groundTruths, MAP& correspondence){
+	MatrixXd Q = MatrixXd::Zero(M_DIMENSION, M_DIMENSION);
 
 	auto mIter = measurements.begin();
 	auto gIter = groundTruths.begin();
@@ -210,8 +209,8 @@ kalman::StateDistribution kalman::processObservations(VectorXd& mu_bar, MatrixXd
 }
 
 
-//performs one iteration of the Extended Kalman Filter Localization algorithm (w/ known correspondence). 
-//returns a Gaussian distribution over states of the subsequent time step.
+//perform one iteration of the Extended Kalman Filter Localization algorithm (w/ known correspondence). 
+//return a Gaussian distribution over states of the subsequent time step.
 kalman::StateDistribution kalman::EKF_known_correspondence(const StateDistribution belief, const Control& ctrl, Measurement& measure, MAP& correspondence, VectorXd& alphas, MatrixXd measrCovar, double dt){
 	auto mu = belief.mean;
 	auto sigma = belief.covar;
@@ -220,27 +219,106 @@ kalman::StateDistribution kalman::EKF_known_correspondence(const StateDistributi
 	auto G = motionJacobianState(mu,ctrl,dt);
 	auto V = motionJacobianControl(mu,ctrl,dt);
 	
-	//////////////////////////////////////////
-	// Construct control-noise covariance M //
-	//////////////////////////////////////////
+	//2. Construct control-noise covariance M 	
 	MatrixXd M(C_DIMENSION, C_DIMENSION);
 	double v = abs((ctrl.lin_vel));
 	double w = abs((ctrl.ang_vel == 0 ? W_MIN:ctrl.ang_vel));
-
 	M << pow(alphas[0]*v + alphas[1]*w, 2),   0,
            0 , 			pow(alphas[2]*v + alphas[3]*w,2);
-	///////////////////////////////////////////
-    ///////////////////////////////////////////
 
-	//2. PREDICTION: Update gaussian using control 
+	//3. PREDICTION: Update gaussian using control 
 	VectorXd mu_bar = expectedMotion(mu, ctrl, dt);
 	MatrixXd sigma_bar = G*sigma*(G.transpose()) + motionCovariance(M,V);
 
-	//3. MEASUREMENT UPDATE: Incorporate all measurement readings at current timestep
+	//4. MEASUREMENT UPDATE: Incorporate all measurement readings at current timestep
 	StateDistribution distr = processObservations(mu_bar, sigma_bar, measrCovar, measure, correspondence);
 
 	return distr;
 }
+
+
+
+
+////////////////////////////////////////////////
+//////////////// UKF Functions /////////////////
+////////////////////////////////////////////////
+
+//augment state vector to contain means of control noise distribution and of measurement noise distribution
+VectorXd kalman::augmentState(VectorXd& state){
+	VectorXd augmented =  VectorXd::Zero(S_DIMENSION + C_DIMENSION + M_DIMENSION);
+	augmented(0) =  state[0]; 
+	augmented(1) = state[1];
+	return augmented;
+}
+
+//augment covariance matrix to contain covariances of control noise and measurement noise
+MatrixXd kalman::augmentCovariance(MatrixXd& stateCovar, MatrixXd& ctrlNoiseCovar,MatrixXd& measureNoiseCovar){
+	int DIM = S_DIMENSION + C_DIMENSION + M_DIMENSION;
+	MatrixXd augmented = MatrixXd::Zero(DIM, DIM);
+	int i = 0;
+	augmented.block<S_DIMENSION,S_DIMENSION>(i,i) = stateCovar;
+	i += S_DIMENSION;
+	augmented.block<C_DIMENSION,C_DIMENSION>(i,i) = ctrlNoiseCovar;
+	i += C_DIMENSION;
+	augmented.block<M_DIMENSION,M_DIMENSION>(i,i) = measureNoiseCovar;
+	return augmented;//augmented is block diagonal
+}
+
+
+//generate sigma points of the distribution parameterized by mean and covar
+//parameters lambda, alpha, and beta are used to compute the weights associated with each sigma point
+std::vector<kalman::SigmaPoint>  kalman::makeSigmaPoints(const VectorXd& mean, const MatrixXd& sigma, double lambda, double alpha, double beta){
+	std::vector<kalman::SigmaPoint> SigmaPts;
+	double gamma = 0;
+	
+	//compute the first statistics
+	int DIM = mean.rows();
+	double meanW = lambda/(DIM + lambda); //weight for recovering mean
+	double covarW = meanW + (1 - pow(alpha,2)+beta); //weight for recovering covariance
+	SigmaPts.push_back(SigmaPoint(mean, meanW, covarW));
+	
+	//Cholesky decomposition of sigma matrix
+	LLT<MatrixXd> lltOfA(sigma); 
+	MatrixXd sqrtSigma = lltOfA.matrixL(); 
+
+	//collect the remaining statistics
+	for(int i = 0; i < sqrtSigma.cols(); ++i){
+		meanW = 1/(2*(DIM+lambda));
+		covarW = meanW;
+		gamma = sqrt(DIM + lambda);
+		SigmaPts.push_back(SigmaPoint(mean + gamma*sqrtSigma.col(i), meanW, covarW ));
+		SigmaPts.push_back(SigmaPoint(mean - gamma*sqrtSigma.col(i),meanW, covarW ));
+	}
+	return SigmaPts;
+} 
+
+
+// //evolve state and control into subsequent state according to motion model
+VectorXd kalman::motionModel(const VectorXd& state, const VectorXd& control, double dt){
+	double x = state[0];
+	double y = state[1];
+	double th = state[2];
+	double v = control[0];
+	double w = (control[1] == 0)? W_MIN:control[1]; //avoid -division
+	double radius = v/w;
+
+	VectorXd nextState(S_DIMENSION);
+	double x_bar = x + radius*(-sin(th) +sin(th+w*dt));
+	double y_bar = y + radius*(cos(th)-cos(th+w*dt));
+	double th_bar = th + w*dt;
+	th_bar = atan2(sin(th_bar), cos(th_bar)); //wrap within [-pi,pi]
+	nextState << x_bar, y_bar, th_bar;
+	
+	return nextState;
+}
+
+
+// //evolve sigma points according to motion model
+// std::vector<kalman::SigmaPoint> kalman::evolveSigmaPoints(const vector<kalman::SigmaPoint> SPoints, const VectorXd& control, double dt){
+
+
+// }
+
 
 
 
