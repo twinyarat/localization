@@ -1,5 +1,6 @@
 #include "preprocess.h"
 
+
 void preprocess::readStatesFromFile(string fname, vector<State>& vec){ //reads States into vec
 	ifstream rFile(fname);
 	string line;
@@ -12,7 +13,7 @@ void preprocess::readStatesFromFile(string fname, vector<State>& vec){ //reads S
 			if(line[0] != '#'){ //skip all headers 
 				istringstream ss(line);
 				ss >> time_stamp >> x >> y >> rad;
-				kalman::State fresh(time_stamp, x , y, rad);
+				State fresh(time_stamp, x , y, rad);
 				vec.push_back(fresh);
 			}//end if
 		}//end while
@@ -23,7 +24,7 @@ void preprocess::readStatesFromFile(string fname, vector<State>& vec){ //reads S
 	rFile.close();
 }
 
-void preprocess::readControlsFromFile(string fname, vector<kalman::Control>& vec){ //reads Controls into vec
+void preprocess::readControlsFromFile(string fname, vector<Control>& vec){ //reads Controls into vec
 	ifstream rFile(fname);
 	string line;
 	if(rFile.is_open()){
@@ -34,7 +35,7 @@ void preprocess::readControlsFromFile(string fname, vector<kalman::Control>& vec
 			if(line[0] != '#'){ //skip all headers 
 				istringstream ss(line);
 				ss >> time_stamp >> vel >> ang ;
-				vec.push_back(kalman::Control(time_stamp, vel, ang));
+				vec.push_back(Control(time_stamp, vel, ang));
 			}//end if
 		}//end while
 	}
@@ -44,7 +45,7 @@ void preprocess::readControlsFromFile(string fname, vector<kalman::Control>& vec
 	rFile.close();
 }
 
-void preprocess::readMeasuresFromFile(string fname, vector<kalman::Measurement>& vec, double dt){ //reads measurements into vec 
+void preprocess::readMeasuresFromFile(string fname, vector<Measurement>& vec, double dt){ //reads measurements into vec 
 	ifstream rFile(fname);
 		string line;
 		if(rFile.is_open()){
@@ -182,10 +183,10 @@ map<int,int> preprocess::landmarkToBarcode(string fname){
 }
 
 //construct a map from barcodes of landmark to their x-y coordinates 
-map<int, kalman::Position> preprocess::barcodeToPosition(string fname, map<int, int> landmarkToBarcode ){
+map<int, Position> preprocess::barcodeToPosition(string fname, map<int, int> landmarkToBarcode ){
 	ifstream rFile(fname);
 	string line;
-	map<int,kalman::Position> table;
+	map<int,Position> table;
 
 	if(rFile.is_open()){
 		int key = 0;
@@ -196,7 +197,7 @@ map<int, kalman::Position> preprocess::barcodeToPosition(string fname, map<int, 
 			if(line[0] != '#'){ //skip all headers 
 				istringstream ss(line);
 				ss >> key >> xpos >> ypos; //discard the 2 remaining columns
-				table[landmarkToBarcode[key]] = kalman::Position(xpos, ypos);
+				table[landmarkToBarcode[key]] = Position(xpos, ypos);
 			}
 		}//end while		
 	}//end if

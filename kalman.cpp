@@ -1,7 +1,5 @@
 #include "kalman.h"
-using MAP = std::map<int, kalman::Position>;
-#include<iostream>
-
+using MAP = std::map<int,token::Position>;
 
 //construct the jacobian of the dynamics/motion model with respect to state
 MatrixXd kalman::motionJacobianState(const VectorXd& state, const Control& ctrl, double dt){
@@ -116,10 +114,10 @@ VectorXd kalman::expectedControl(const State& curState, const State& nextState, 
 }
 
 //learn the intrinsic parameters a of the control noise covariance M.
-//where M is of the form [{a(1)v+a(2)w}^2,	{a(3)v+a(4)w}^2
-//						  {a(3)v+a(4)w}^2,  {a(5)v+a(6)w}^2]
+//where M is of the form [{a(0)v+a(1)w}^2,	{a(4)v+a(5)w}^2
+//						  {a(4)v+a(5)w}^2,  {a(2)v+a(3)w}^2]
 VectorXd kalman::learnControlNoiseParams(std::vector<Control> controls, std::vector<State> groundTruths, double dt){
-	int timesteps = groundTruths.size() - 1; //compute expected controls using state-pairs
+	int TIMESTEPS = groundTruths.size() - 1; //compute expected controls using state-pairs
 	
 	MatrixXd sampleCovarTemp(C_DIMENSION, C_DIMENSION);
 	VectorXd ctrlVec(C_DIMENSION);
@@ -132,7 +130,7 @@ VectorXd kalman::learnControlNoiseParams(std::vector<Control> controls, std::vec
 	std::vector<double> samplectrlw;
 	
 	//collect all control samples and variance samples into vectors
-	for(int i = 0; i < timesteps; ++i){
+	for(int i = 0; i < TIMESTEPS; ++i){
 		ctrlVec = controls[i].toVector();
 		expectedCtrlVec = expectedControl(groundTruths[i], groundTruths[i+1], dt);
 		sampleCovarTemp = (ctrlVec -  expectedCtrlVec)*((ctrlVec - expectedCtrlVec).transpose());
@@ -147,7 +145,7 @@ VectorXd kalman::learnControlNoiseParams(std::vector<Control> controls, std::vec
 
 	//collect all covariance and control samples into matrices
 	MatrixXd sampleCovar(samplecov00.size(),3);
-	MatrixXd controlSamples(samplectrlv.size(),2);
+	MatrixXd controlSamples(samplectrlv.size(),C_DIMENSION);
 	for(int i = 0; i < samplecov00.size(); ++i){
 		
 		sampleCovar(i,0) = sqrt(std::accumulate(samplecov00.begin(),samplecov00.end(), 0.0))/samplecov00.size();
@@ -158,7 +156,7 @@ VectorXd kalman::learnControlNoiseParams(std::vector<Control> controls, std::vec
 		controlSamples(i,1) = samplectrlw[i];
 	}
 
-	//Solve A'Ax=A'b and reshape solution alphas into row vector
+	//Solve A'Ax=A'b and reshape solution, alphas, into row vector
 	MatrixXd params = controlSamples.colPivHouseholderQr().solve(sampleCovar); 
 	Map<VectorXd> alphas(params.data(), params.size());
 	return alphas;
@@ -189,7 +187,7 @@ MatrixXd kalman::learnMeasureNoiseCovariance(std::vector<Measurement>& measureme
 }
 
 //incorporate measurement(all sensor reading) into the state distribution update
-kalman::NormalDistribution kalman::processObservations(VectorXd& mu_bar, MatrixXd& sigma_bar, MatrixXd& noiseCovar, Measurement& measure, MAP& correspondence ){
+NormalDistribution kalman::processObservationsEKF(VectorXd& mu_bar, MatrixXd& sigma_bar, MatrixXd& noiseCovar, Measurement& measure, MAP& correspondence ){
 	MatrixXd H; 
 	MatrixXd S;
 	MatrixXd K; 
@@ -206,13 +204,13 @@ kalman::NormalDistribution kalman::processObservations(VectorXd& mu_bar, MatrixX
 			sigma_bar = sigma_bar - K*H*sigma_bar;
 		}
 	}
-	return kalman::NormalDistribution(mu_bar, sigma_bar);
+	return NormalDistribution(mu_bar, sigma_bar);
 }
 
 
 //perform one iteration of the Extended Kalman Filter Localization algorithm (w/ known correspondence). 
 //return a Gaussian distribution over states of the subsequent time step.
-kalman::NormalDistribution kalman::EKF_known_correspondence(const NormalDistribution belief, Control& ctrl, Measurement& measure, MAP& correspondence, VectorXd& alphas, MatrixXd measrCovar, double dt){
+NormalDistribution kalman::EKF_known_correspondence(const NormalDistribution belief, Control& ctrl, Measurement& measure, MAP& correspondence, VectorXd& alphas, MatrixXd measrCovar, double dt){
 	auto mu = belief.mean;
 	auto sigma = belief.covar;
 	
@@ -232,7 +230,7 @@ kalman::NormalDistribution kalman::EKF_known_correspondence(const NormalDistribu
 	MatrixXd sigma_bar = G*sigma*(G.transpose()) + motionCovariance(M,V);
 
 	//4. MEASUREMENT UPDATE: Incorporate all measurement readings at current timestep
-	NormalDistribution distr = processObservations(mu_bar, sigma_bar, measrCovar, measure, correspondence);
+	NormalDistribution distr = processObservationsEKF(mu_bar, sigma_bar, measrCovar, measure, correspondence);
 
 	return distr;
 }
@@ -244,32 +242,10 @@ kalman::NormalDistribution kalman::EKF_known_correspondence(const NormalDistribu
 //////////////// UKF Functions /////////////////
 ////////////////////////////////////////////////
 
-// //augment state vector to contain means of control noise distribution and of measurement noise distribution
-// VectorXd kalman::augmentState(VectorXd& state){
-// 	VectorXd augmented =  VectorXd::Zero(S_DIMENSION + C_DIMENSION + M_DIMENSION);
-// 	augmented(0) =  state[0]; 
-// 	augmented(1) = state[1];
-// 	return augmented;
-// }
-
-// //augment covariance matrix to contain covariances of control noise and measurement noise
-// MatrixXd kalman::augmentCovariance(MatrixXd& stateCovar, MatrixXd& ctrlNoiseCovar,MatrixXd& measureNoiseCovar){
-// 	int DIM = S_DIMENSION + C_DIMENSION + M_DIMENSION;
-// 	MatrixXd augmented = MatrixXd::Zero(DIM, DIM);
-// 	int i = 0;
-// 	augmented.block<S_DIMENSION,S_DIMENSION>(i,i) = stateCovar;
-// 	i += S_DIMENSION;
-// 	augmented.block<C_DIMENSION,C_DIMENSION>(i,i) = ctrlNoiseCovar;
-// 	i += C_DIMENSION;
-// 	augmented.block<M_DIMENSION,M_DIMENSION>(i,i) = measureNoiseCovar;
-// 	return augmented;//augmented is block diagonal
-// }
-
-
 // //generate sigma points of the distribution parameterized by mean and covar
 // //parameters lambda, alpha, and beta are used to compute the weights associated with each sigma point
-// std::vector<kalman::SigmaPoint>  kalman::makeSigmaPoints(const VectorXd& mean, const MatrixXd& covar, double lambda){
-// 	std::vector<kalman::SigmaPoint> SigmaPts;
+// std::vector<SigmaPoint>  kalman::makeSigmaPoints(const VectorXd& mean, const MatrixXd& covar, double lambda){
+// 	std::vector<SigmaPoint> SigmaPts;
 // 	double gamma = 0;
 	
 // 	//compute the first statistics
@@ -295,14 +271,16 @@ kalman::NormalDistribution kalman::EKF_known_correspondence(const NormalDistribu
 
 
 
-//generate sigma points of the distribution parameterized by mean and covar
-//parameter m must satisfy 0.5 < m < 1
-std::vector<kalman::SigmaPoint>  kalman::makeSigmaPoints(const VectorXd& mean, const MatrixXd& covar, double m){
-	std::vector<kalman::SigmaPoint> SigmaPts;
+//generate sigma points of the distribution parameterized by mean and covar.
+//parameter m must satisfy 0.5 < m < 1 based on reference paper.
+//REFERENCE: "A New Method for Generating Sigma Points and Weights for Nonlinear Filtering" by Rahul Radhakrishnan
+std::vector<SigmaPoint>  kalman::makeSigmaPoints(const VectorXd& mean, const MatrixXd& covar, double m){
+	std::vector<SigmaPoint> SigmaPts;
 	
 	//0. Cholesky decompose covar
 	LLT<MatrixXd> lltOfA(covar); 
 	MatrixXd sqrtCovar = lltOfA.matrixL(); 
+	
 	//1. compute alphas
 	std::vector<double> alphas;
 	for(int i = 0; i < covar.cols(); ++i){
@@ -311,13 +289,16 @@ std::vector<kalman::SigmaPoint>  kalman::makeSigmaPoints(const VectorXd& mean, c
 		alphas.push_back(a);
 	}
 
+	//2. compute auxillary variables
 	double alphaSum = accumulate(alphas.begin(), alphas.end(), 0.0);
 	double beta = 0.25*m*(*max_element(alphas.begin(), alphas.end())) - 0.5*alphaSum + 1;
 	double si = alphaSum + beta;
 
+	//3. generate the mean sigma point
 	double meanWeight = 1- alphaSum/(2*si);
 	SigmaPts.push_back(SigmaPoint(mean, meanWeight , meanWeight));
 
+	//4. generate the remaining 4x(S_DIMENSION) sigma points
 	for(int i = 0; i < sqrtCovar.cols(); ++i){
 		auto sig1 = mean + sqrt(si/(m*alphas[i]))*sqrtCovar.col(i);
 		auto sig2 = mean - sqrt(si/(m*alphas[i]))*sqrtCovar.col(i);
@@ -339,11 +320,11 @@ std::vector<kalman::SigmaPoint>  kalman::makeSigmaPoints(const VectorXd& mean, c
 
 
 //evolve augmented sigma points into state-only sigma points according to motion model. 
-//evolution of state subvectors is NOT an in-place operation. 
-std::vector<kalman::SigmaPoint> kalman::evolveSigmaPoints(std::vector<kalman::SigmaPoint>& SPoints, const VectorXd& control, double dt){
+//NOTE: evolution of state subvectors is NOT an in-place operation. 
+std::vector<SigmaPoint> kalman::evolveSigmaPoints(std::vector<SigmaPoint>& SPoints, const VectorXd& control, double dt){
 	VectorXd state(S_DIMENSION);
 	VectorXd x_bar(S_DIMENSION);
-	std::vector<kalman::SigmaPoint> evolved;
+	std::vector<SigmaPoint> evolved;
 
 	//pass the state component of each sigma point through motion model with a noisy control
 	for(auto s: SPoints){
@@ -355,62 +336,64 @@ std::vector<kalman::SigmaPoint> kalman::evolveSigmaPoints(std::vector<kalman::Si
 }
 
 
-//incorporate measurement into correction of state sigma points
+//incorporate measurement into the correction of state sigma points
 //return a normal distribution of the corrected states
-kalman::NormalDistribution kalman::correctSigmaPoints(kalman::NormalDistribution stateDistr,  Measurement& measure, MAP& correspondence, MatrixXd& measureNoiseCovar, double lambda){
+NormalDistribution kalman::correctSigmaPoints(NormalDistribution stateDistr,  Measurement& measure, MAP& correspondence, MatrixXd& measureNoiseCovar, double lambda){
 
-	//generate sigma points from the distribution of evolved states
-	auto eSigmaPoints = makeSigmaPoints(stateDistr.mean, stateDistr.covar, lambda);
+	std::vector<SigmaPoint> readingSigmas;
 	MatrixXd zeroMat = MatrixXd::Zero(M_DIMENSION, M_DIMENSION);
 	VectorXd expectedRead = VectorXd(M_DIMENSION);
-	std::vector<kalman::SigmaPoint> readingSigmas;
+	VectorXd state(S_DIMENSION);
 	double weight = 0;
+	
+	MatrixXd crossCovar = MatrixXd::Zero(S_DIMENSION, M_DIMENSION);
 	MatrixXd kalmanGain(S_DIMENSION, M_DIMENSION);
 	VectorXd correctedStateMean(stateDistr.mean);
 	MatrixXd correctedStateCovar(stateDistr.covar);
-	VectorXd state(S_DIMENSION);
-	MatrixXd crossCovar = MatrixXd::Zero(S_DIMENSION, M_DIMENSION);
+
+	//1. generate sigma points from the distribution of evolved states
+	auto eSigmaPoints = makeSigmaPoints(stateDistr.mean, stateDistr.covar, lambda);
 	
-	//Process multiple sensor readings contained in the input measure.
+	//2. Process multiple sensor readings contained in the input measure.
 	for(auto r: measure.readings){
 		
 		if( correspondence.find(r.barcode) != correspondence.end() ){ 
-			//collect expected reading associated with each sigma point
+			//3. collect expected reading associated with each sigma point
 			for(auto s: eSigmaPoints){
 				expectedRead = expectedReading(s.vec, r, correspondence); //pass each evolved sigma point through measurement model
 				readingSigmas.push_back(SigmaPoint(expectedRead, s.meanWeight, s.covarWeight));
 			}
 			
-			//compute mean and covariance of all expected readings collected above
+			//4. compute mean and covariance of all expected readings collected above
 			auto readingDistribution = distributionFromStatistics(readingSigmas, measureNoiseCovar);
 			auto meanReading = readingDistribution.mean;
 			auto covarReading = readingDistribution.covar;
 			
-			//compute cross-covariance (state-reading)
+			//5. compute cross-covariance (state-reading)
 			for(int i= 0; i < eSigmaPoints.size(); ++i){
 				weight = readingSigmas[i].covarWeight;
 				state = eSigmaPoints[i].vec;
 				crossCovar += weight*(state - stateDistr.mean)*((readingSigmas[i].vec - meanReading).transpose());
 			}
 
-			//compute kalman gain matrix
+			//6. compute kalman gain matrix
 			kalmanGain = crossCovar*(covarReading.inverse());
-			//correct mean of states using innovation 
+			//7. correct mean of states using innovation 
 			correctedStateMean += kalmanGain*(r.toVector() -  meanReading);
-			//correct covariance of states
+			//8. correct covariance of states
 			correctedStateCovar -= kalmanGain*covarReading*(kalmanGain.transpose());
-			//clear expected readings at Sigma points for next set of expected readings
+			//9. clear expected readings at Sigma points for the next set of expected readings
 			readingSigmas.clear();
 		}
 
 	}
 
 
-	return kalman::NormalDistribution(correctedStateMean, correctedStateCovar);
+	return NormalDistribution(correctedStateMean, correctedStateCovar);
 }
 
 //calculate the mean and covariance of Sigma points with added noise covariance 
-kalman::NormalDistribution kalman::distributionFromStatistics(std::vector<kalman::SigmaPoint>& SPoints, MatrixXd& noiseCovar){
+NormalDistribution kalman::distributionFromStatistics(std::vector<SigmaPoint>& SPoints, MatrixXd& noiseCovar){
 	int DIM = SPoints[0].vec.rows();
 	VectorXd mean = VectorXd::Zero(DIM);
 	MatrixXd covariance = MatrixXd::Zero(DIM,DIM);
@@ -429,7 +412,7 @@ kalman::NormalDistribution kalman::distributionFromStatistics(std::vector<kalman
 
 //perform one iteration of the Unscented Kalman Filter Localization algorithm.
 //return distribution over states of the subsequent time step
-kalman::NormalDistribution kalman::UKF_known_correspondence(NormalDistribution belief, Control& ctrl, Measurement& measure, MAP& correspondence, const VectorXd& alphas, MatrixXd& measrCovar, double dt, double lambda){
+NormalDistribution kalman::UKF_known_correspondence(NormalDistribution belief, Control& ctrl, Measurement& measure, MAP& correspondence, const VectorXd& alphas, MatrixXd& measrCovar, double dt, double lambda){
 	auto stateMean = belief.mean;
 	auto stateCovar = belief.covar;
 	MatrixXd motionNoiseCovar(S_DIMENSION, S_DIMENSION);
@@ -443,14 +426,14 @@ kalman::NormalDistribution kalman::UKF_known_correspondence(NormalDistribution b
 
 
 	//2.generate sigma points of the distribution of augmented states
-	std::vector<kalman::SigmaPoint> sigmaPoints =  makeSigmaPoints(stateMean, stateCovar, lambda);
+	std::vector<SigmaPoint> sigmaPoints =  makeSigmaPoints(stateMean, stateCovar, lambda);
 
 	//3.evolve sigma points through the motion model using control input
-	std::vector<kalman::SigmaPoint> evolvedSigmaPoints = evolveSigmaPoints(sigmaPoints, ctrl.toVector(), dt);
+	std::vector<SigmaPoint> evolvedSigmaPoints = evolveSigmaPoints(sigmaPoints, ctrl.toVector(), dt);
 	
-	//4.Incorporate motion-related noise in computing the mean and covariance of the evolved sigma points
+	//4.Incorporate motion-related noise into computing the mean and covariance of the evolved sigma points
 	motionNoiseCovar = motionCovariance(ctrlCovar, motionJacobianControl(stateMean, ctrl, dt));
-	kalman::NormalDistribution evolvedDistr = distributionFromStatistics(evolvedSigmaPoints, motionNoiseCovar);
+	NormalDistribution evolvedDistr = distributionFromStatistics(evolvedSigmaPoints, motionNoiseCovar);
 	
 	//5.correct evolved sigma points using readings in measurement
 	auto correctedDistr = correctSigmaPoints(evolvedDistr, measure, correspondence, measrCovar, lambda);
